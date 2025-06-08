@@ -28,7 +28,6 @@ type Credential struct {
 // Session represents an active Claude Code session
 type Session struct {
 	ID               int64      `json:"id" db:"id"`
-	UserID           int64      `json:"user_id" db:"user_id"`
 	SessionID        string     `json:"session_id" db:"session_id"`
 	SlackWorkspaceID string     `json:"slack_workspace_id" db:"slack_workspace_id"`
 	SlackChannelID   string     `json:"slack_channel_id" db:"slack_channel_id"`
@@ -36,11 +35,40 @@ type Session struct {
 	RepoURL          string     `json:"repo_url" db:"repo_url"`
 	BranchName       string     `json:"branch_name" db:"branch_name"`
 	WorkTreePath     string     `json:"work_tree_path" db:"work_tree_path"`
-	ClaudeProcessPID int        `json:"claude_process_pid" db:"claude_process_pid"`
+	RunningCost      float64    `json:"running_cost" db:"running_cost"`
 	Status           string     `json:"status" db:"status"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at" db:"updated_at"`
 	EndedAt          *time.Time `json:"ended_at" db:"ended_at"`
+}
+
+// SystemPrompt represents a reusable system prompt template
+type SystemPrompt struct {
+	ID          int64     `json:"id" db:"id"`
+	Name        string    `json:"name" db:"name"`
+	Description string    `json:"description" db:"description"`
+	Content     string    `json:"content" db:"content"`
+	IsPublic    bool      `json:"is_public" db:"is_public"`
+	CreatedBy   int64     `json:"created_by" db:"created_by"`
+	CreatedAt   time.Time `json:"created_at" db:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at" db:"updated_at"`
+}
+
+// SessionUser represents the many-to-many relationship between sessions and users
+type SessionUser struct {
+	ID        int64     `json:"id" db:"id"`
+	SessionID int64     `json:"session_id" db:"session_id"`
+	UserID    int64     `json:"user_id" db:"user_id"`
+	Role      string    `json:"role" db:"role"`
+	JoinedAt  time.Time `json:"joined_at" db:"joined_at"`
+}
+
+// UserSystemPrompt represents the many-to-many relationship between users and system prompts
+type UserSystemPrompt struct {
+	ID             int64     `json:"id" db:"id"`
+	UserID         int64     `json:"user_id" db:"user_id"`
+	SystemPromptID int64     `json:"system_prompt_id" db:"system_prompt_id"`
+	CreatedAt      time.Time `json:"created_at" db:"created_at"`
 }
 
 // SessionMessage represents a message in a session for audit trail
@@ -57,12 +85,13 @@ type SessionMessage struct {
 
 // CreateSessionRequest represents a request to create a new session
 type CreateSessionRequest struct {
-	WorkspaceID string `json:"workspace_id"`
-	UserID      int64  `json:"user_id"`
-	ChannelID   string `json:"channel_id"`
-	ThreadTS    string `json:"thread_ts"` // empty for channel-pinned sessions
-	RepoURL     string `json:"repo_url"`
-	Branch      string `json:"branch"`
+	WorkspaceID       string `json:"workspace_id"`
+	CreatedByUserID   int64  `json:"created_by_user_id"`
+	ChannelID         string `json:"channel_id"`
+	ThreadTS          string `json:"thread_ts"` // empty for channel-pinned sessions
+	RepoURL           string `json:"repo_url"`
+	Branch            string `json:"branch"`
+	SystemPromptID    *int64 `json:"system_prompt_id,omitempty"`
 }
 
 // CreateUserRequest represents a request to create a new user
@@ -77,6 +106,31 @@ type StoreCredentialRequest struct {
 	UserID         int64  `json:"user_id"`
 	CredentialType string `json:"credential_type"`
 	Value          string `json:"value"`
+}
+
+// CreateSystemPromptRequest represents a request to create a new system prompt
+type CreateSystemPromptRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Content     string `json:"content"`
+	IsPublic    bool   `json:"is_public"`
+	CreatedBy   int64  `json:"created_by"`
+}
+
+// UpdateSystemPromptRequest represents a request to update a system prompt
+type UpdateSystemPromptRequest struct {
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Content     string `json:"content"`
+	IsPublic    bool   `json:"is_public"`
+}
+
+// JoinSessionRequest represents a request to join an existing session
+type JoinSessionRequest struct {
+	SessionID string `json:"session_id"`
+	UserID    int64  `json:"user_id"`
+	Role      string `json:"role"`
 }
 
 // ClaudeProcess represents a running Claude Code process
@@ -154,4 +208,11 @@ const (
 const (
 	MessageDirectionUserToClaude = "user_to_claude"
 	MessageDirectionClaudeToUser = "claude_to_user"
+)
+
+// Session user role constants
+const (
+	SessionRoleOwner       = "owner"
+	SessionRoleCollaborator = "collaborator"
+	SessionRoleViewer      = "viewer"
 )

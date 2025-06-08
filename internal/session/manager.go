@@ -52,7 +52,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 	}
 
 	// Check user session limit
-	activeSessions, err := m.db.GetActiveSessionsByUser(ctx, req.UserID)
+	activeSessions, err := m.db.GetActiveSessionsByUser(ctx, req.CreatedByUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check user session count: %w", err)
 	}
@@ -76,7 +76,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 	}
 
 	// Get user credentials
-	apiKey, err := m.db.GetCredential(ctx, req.UserID, models.CredentialTypeAnthropic)
+	apiKey, err := m.db.GetCredential(ctx, req.CreatedByUserID, models.CredentialTypeAnthropic)
 	if err != nil {
 		// Cleanup work tree on failure
 		m.repoMgr.Cleanup(ctx, workTreePath)
@@ -84,7 +84,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 	}
 
 	// Start Claude Code session
-	process, err := m.claudeMgr.StartSession(ctx, sessionID, workTreePath, apiKey)
+	_, err = m.claudeMgr.StartSession(ctx, sessionID, workTreePath, apiKey)
 	if err != nil {
 		// Cleanup work tree on failure
 		m.repoMgr.Cleanup(ctx, workTreePath)
@@ -93,7 +93,6 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 
 	// Create session record
 	session := &models.Session{
-		UserID:           req.UserID,
 		SessionID:        sessionID,
 		SlackWorkspaceID: req.WorkspaceID,
 		SlackChannelID:   req.ChannelID,
@@ -101,7 +100,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 		RepoURL:          req.RepoURL,
 		BranchName:       req.Branch,
 		WorkTreePath:     workTreePath,
-		ClaudeProcessPID: process.PID,
+		RunningCost:      0.0,
 		Status:           models.SessionStatusActive,
 	}
 
@@ -113,7 +112,15 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 		return nil, fmt.Errorf("failed to store session: %w", err)
 	}
 
-	log.Printf("Created session %s for user %d in channel %s", sessionID, req.UserID, req.ChannelID)
+	// Add the creating user as the owner of the session
+	if err := m.db.AddUserToSession(ctx, session.ID, req.CreatedByUserID, models.SessionRoleOwner); err != nil {
+		// Cleanup on failure
+		m.claudeMgr.StopSession(ctx, sessionID)
+		m.repoMgr.Cleanup(ctx, workTreePath)
+		return nil, fmt.Errorf("failed to add owner to session: %w", err)
+	}
+
+	log.Printf("Created session %s for user %d in channel %s", sessionID, req.CreatedByUserID, req.ChannelID)
 	return session, nil
 }
 
@@ -252,6 +259,16 @@ func (m *Manager) GetUserBySlackID(ctx context.Context, workspaceID, userID stri
 	return m.db.GetUserBySlackID(ctx, workspaceID, userID)
 }
 
+// GetSessionOwner retrieves the owner user ID for a session
+func (m *Manager) GetSessionOwner(ctx context.Context, sessionID int64) (int64, error) {
+	return m.db.GetSessionOwner(ctx, sessionID)
+}
+
+// UpdateSessionCost updates the running cost for a session
+func (m *Manager) UpdateSessionCost(ctx context.Context, sessionID string, cost float64) error {
+	return m.db.UpdateSessionCost(ctx, sessionID, cost)
+}
+
 // GetSessionInfo returns detailed information about a session
 func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[string]interface{}, error) {
 	session, err := m.db.GetSession(ctx, sessionID)
@@ -264,6 +281,7 @@ func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[str
 		"status":        session.Status,
 		"repo_url":      session.RepoURL,
 		"branch":        session.BranchName,
+		"running_cost":  session.RunningCost,
 		"created_at":    session.CreatedAt,
 		"updated_at":    session.UpdatedAt,
 		"channel_id":    session.SlackChannelID,
@@ -273,7 +291,6 @@ func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[str
 	// Get Claude process status
 	if claudeProcess, err := m.claudeMgr.GetSession(sessionID); err == nil {
 		info["claude_status"] = claudeProcess.GetStatus()
-		info["claude_pid"] = claudeProcess.PID
 		info["claude_started_at"] = claudeProcess.StartedAt
 	}
 
@@ -291,7 +308,7 @@ func (m *Manager) validateCreateSessionRequest(req *models.CreateSessionRequest)
 	if req.WorkspaceID == "" {
 		return models.NewCBError(models.ErrCodeInvalidCommand, "workspace ID is required", nil)
 	}
-	if req.UserID == 0 {
+	if req.CreatedByUserID == 0 {
 		return models.NewCBError(models.ErrCodeInvalidCommand, "user ID is required", nil)
 	}
 	if req.ChannelID == "" {

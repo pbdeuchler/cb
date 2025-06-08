@@ -160,12 +160,12 @@ func TestSessionLifecycle(t *testing.T) {
 	// Test session creation (this will fail because we're using echo instead of claude-code)
 	// but we can test the validation and database operations
 	sessionReq := &models.CreateSessionRequest{
-		WorkspaceID: user.SlackWorkspaceID,
-		UserID:      user.ID,
-		ChannelID:   "C123456",
-		ThreadTS:    "",
-		RepoURL:     "https://github.com/test/repo",
-		Branch:      "main",
+		WorkspaceID:     user.SlackWorkspaceID,
+		CreatedByUserID: user.ID,
+		ChannelID:       "C123456",
+		ThreadTS:        "",
+		RepoURL:         "https://github.com/test/repo",
+		Branch:          "main",
 	}
 
 	// This will fail at the Claude process start, but that's expected in test
@@ -257,7 +257,6 @@ func TestDatabaseOperations(t *testing.T) {
 
 	// Test session operations
 	session := &models.Session{
-		UserID:           user1.ID,
 		SessionID:        "test-session-123",
 		SlackWorkspaceID: user1.SlackWorkspaceID,
 		SlackChannelID:   "C123456",
@@ -265,7 +264,7 @@ func TestDatabaseOperations(t *testing.T) {
 		RepoURL:          "https://github.com/test/repo",
 		BranchName:       "main",
 		WorkTreePath:     "/tmp/test-session",
-		ClaudeProcessPID: 12345,
+		RunningCost:      0.0,
 		Status:           models.SessionStatusActive,
 	}
 

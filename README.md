@@ -1,6 +1,16 @@
-# Claude Bot (CB)
+# Claude Bot
 
-A distributed service that bridges Slack workspaces with Claude Code sessions, enabling collaborative AI-assisted development directly within Slack channels and threads.
+A small Go service that bridges Slack workspaces with Claude Code sessions, enabling collaborative AI-assisted development directly within Slack channels and threads.
+
+> [!CAUTION]
+> This repo is _not_ production ready and has many security flaws, use at your own risk
+
+> [!WARNING]  
+> As an experiment repo was entirely made by Claude Code, and partially this bot itself.
+> I restrained myself from doing manual code changes as much as I could,
+> but there were a couple very small edits (lt ~20 chars per edit) here and there.
+> This code should be treated and trusted accordingly.
+> All text below this line (and elsewhere in this repo) is entirely maintained by an LLM.
 
 ## Features
 
@@ -19,19 +29,25 @@ A distributed service that bridges Slack workspaces with Claude Code sessions, e
 │   Slack API     │────▶│   CB Service     │────▶│  Claude Code    │
 │   (Webhooks)    │     │   (Go/SQLite)    │     │   (Headless)    │
 └─────────────────┘     └──────────────────┘     └─────────────────┘
-                               │
-                               ▼
-                        ┌──────────────────┐
-                        │   Git Repos      │
-                        │   MCP Servers    │
-                        └──────────────────┘
+                                        │           ▲
+                                        │           |
+                                        ▼           ▼
+                                    ┌──────────────────┐
+                                    │   Git Repos      │
+                                    │   MCP Servers    │
+                                    └──────────────────┘
 ```
+
+## Future Enhancements
+
+- [] Docker Integration
+- [] Git Commands
 
 ## Quick Start
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.23 or later
 - Claude Code CLI installed
 - Git
 - Slack Bot Token and Signing Secret
@@ -39,25 +55,29 @@ A distributed service that bridges Slack workspaces with Claude Code sessions, e
 ### Installation
 
 1. Clone the repository:
+
 ```bash
 git clone https://github.com/pbdeuchler/claude-bot
 cd claude-bot
 ```
 
 2. Build the application:
+
 ```bash
 go build -o cb ./cmd/cb
 ```
 
 3. Set up environment variables:
+
 ```bash
 export SLACK_BOT_TOKEN="xoxb-your-bot-token"
 export SLACK_SIGNING_SECRET="your-signing-secret"
 ```
 
 4. Run the service:
+
 ```bash
-./cb
+go run cmd/server
 ```
 
 ## Configuration
@@ -89,6 +109,7 @@ The service is configured via environment variables:
 ```
 
 Examples:
+
 - `@cb start https://github.com/user/repo`
 - `@cb start https://github.com/user/repo feature-branch`
 - `@cb start https://github.com/user/repo main --thread`
@@ -134,7 +155,7 @@ go test -cover ./...
 
 ```
 cb/
-├── cmd/cb/                 # Main application
+├── cmd/server/            # Main application
 ├── internal/
 │   ├── config/            # Configuration management
 │   ├── crypto/            # Encryption/decryption
@@ -223,6 +244,7 @@ The service provides structured logging. Set `LOG_LEVEL=debug` for detailed debu
 ### Health Checks
 
 Check service health:
+
 ```bash
 curl http://localhost:8080/health
 ```

@@ -15,10 +15,10 @@ import (
 
 // EventHandler handles Slack events
 type EventHandler struct {
-	client       *slack.Client
-	sessionMgr   *session.Manager
-	parser       *CommandParser
-	botUserID    string
+	client        *slack.Client
+	sessionMgr    *session.Manager
+	parser        *CommandParser
+	botUserID     string
 	signingSecret string
 }
 
@@ -44,7 +44,7 @@ func (h *EventHandler) HandleAppMention(ctx context.Context, event *slackevents.
 
 	// For now, use a placeholder workspace ID - in production this would come from the event context
 	workspaceID := "default-workspace"
-	
+
 	// Get or create user
 	user, err := h.getOrCreateUser(ctx, workspaceID, event.User)
 	if err != nil {
@@ -70,7 +70,7 @@ func (h *EventHandler) HandleMessage(ctx context.Context, event *slackevents.Mes
 
 	// For now, use a placeholder workspace ID - in production this would come from the event context
 	workspaceID := "default-workspace"
-	
+
 	// Check if there's an active session in this channel/thread
 	session, err := h.sessionMgr.GetActiveSessionForChannel(ctx, workspaceID, event.Channel, event.ThreadTimeStamp)
 	if err != nil || session == nil {
@@ -104,7 +104,7 @@ func (h *EventHandler) handleCommand(ctx context.Context, user *models.User, cha
 	case "help":
 		return h.handleHelpCommand(channelID, threadTS)
 	default:
-		return h.sendErrorMessage(channelID, threadTS, "", 
+		return h.sendErrorMessage(channelID, threadTS, "",
 			models.NewCBError(models.ErrCodeInvalidCommand, "Unknown command", nil))
 	}
 }
@@ -124,8 +124,8 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 		return h.sendErrorMessage(channelID, threadTS, "Failed to check credentials", err)
 	}
 	if !hasCredentials {
-		return h.sendErrorMessage(channelID, threadTS, "", 
-			models.NewCBError(models.ErrCodeNoCredentials, 
+		return h.sendErrorMessage(channelID, threadTS, "",
+			models.NewCBError(models.ErrCodeNoCredentials,
 				"Missing required credentials. Use `credentials set anthropic <api-key>` to set your Anthropic API key", nil))
 	}
 
@@ -138,12 +138,12 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 
 	// Create session request
 	req := &models.CreateSessionRequest{
-		WorkspaceID: user.SlackWorkspaceID,
-		UserID:      user.ID,
-		ChannelID:   channelID,
-		ThreadTS:    sessionThreadTS,
-		RepoURL:     params.RepoURL,
-		Branch:      params.Branch,
+		WorkspaceID:     user.SlackWorkspaceID,
+		CreatedByUserID: user.ID,
+		ChannelID:       channelID,
+		ThreadTS:        sessionThreadTS,
+		RepoURL:         params.RepoURL,
+		Branch:          params.Branch,
 	}
 
 	// Create session
@@ -153,8 +153,8 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 	}
 
 	// Send success message
-	message := fmt.Sprintf("Started Claude Code session!\n\n%s", 
-		FormatSessionInfo(map[string]interface{}{
+	message := fmt.Sprintf("Started Claude Code session!\n\n%s",
+		FormatSessionInfo(map[string]any{
 			"session_id": session.SessionID,
 			"status":     session.Status,
 			"repo_url":   session.RepoURL,
@@ -172,13 +172,17 @@ func (h *EventHandler) handleStopCommand(ctx context.Context, user *models.User,
 		return h.sendErrorMessage(channelID, threadTS, "Failed to find session", err)
 	}
 	if session == nil {
-		return h.sendErrorMessage(channelID, threadTS, "", 
+		return h.sendErrorMessage(channelID, threadTS, "",
 			models.NewCBError(models.ErrCodeSessionNotFound, "No active session in this channel/thread", nil))
 	}
 
 	// Check if user owns the session
-	if session.UserID != user.ID {
-		return h.sendErrorMessage(channelID, threadTS, "", 
+	ownerID, err := h.sessionMgr.GetSessionOwner(ctx, session.ID)
+	if err != nil {
+		return h.sendErrorMessage(channelID, threadTS, "Failed to get session owner", err)
+	}
+	if ownerID != user.ID {
+		return h.sendErrorMessage(channelID, threadTS, "",
 			models.NewCBError(models.ErrCodeUnauthorized, "You can only stop your own sessions", nil))
 	}
 
@@ -223,9 +227,9 @@ func (h *EventHandler) handleListCommand(ctx context.Context, user *models.User,
 
 	var parts []string
 	parts = append(parts, fmt.Sprintf("*Your Active Sessions (%d):*", len(sessions)))
-	
+
 	for _, session := range sessions {
-		info := map[string]interface{}{
+		info := map[string]any{
 			"session_id": session.SessionID,
 			"status":     session.Status,
 			"repo_url":   session.RepoURL,
@@ -251,34 +255,34 @@ func (h *EventHandler) handleCredentialsCommand(ctx context.Context, user *model
 			return h.sendErrorMessage(channelID, threadTS, "Failed to store credential", err)
 		}
 		return h.sendMessage(channelID, threadTS, FormatSuccessMessage(fmt.Sprintf("%s credential stored securely", credType)))
-	
+
 	case "list":
 		// Get stored credential types (without values for security)
 		hasAnthropic := false
 		hasGithub := false
-		
+
 		if _, err := h.sessionMgr.GetCredential(ctx, user.ID, models.CredentialTypeAnthropic); err == nil {
 			hasAnthropic = true
 		}
 		if _, err := h.sessionMgr.GetCredential(ctx, user.ID, models.CredentialTypeGitHub); err == nil {
 			hasGithub = true
 		}
-		
+
 		var parts []string
 		parts = append(parts, "*Your Stored Credentials:*")
-		
+
 		if hasAnthropic {
 			parts = append(parts, "• :white_check_mark: Anthropic API key")
 		} else {
 			parts = append(parts, "• :x: Anthropic API key (required)")
 		}
-		
+
 		if hasGithub {
 			parts = append(parts, "• :white_check_mark: GitHub token")
 		} else {
 			parts = append(parts, "• :x: GitHub token (optional)")
 		}
-		
+
 		return h.sendMessage(channelID, threadTS, strings.Join(parts, "\n"))
 	}
 
@@ -294,8 +298,10 @@ func (h *EventHandler) handleHelpCommand(channelID, threadTS string) error {
 func (h *EventHandler) getOrCreateUser(ctx context.Context, workspaceID, userID string) (*models.User, error) {
 	// Try to get existing user
 	user, err := h.sessionMgr.GetUserBySlackID(ctx, workspaceID, userID)
-	if err == nil {
+	if user != nil && err == nil {
 		return user, nil
+	} else if err != nil {
+		return nil, err
 	}
 
 	// User doesn't exist, get user info from Slack
@@ -338,7 +344,7 @@ func (h *EventHandler) sendErrorMessage(channelID, threadTS, context string, err
 	if context != "" {
 		message = fmt.Sprintf("%s: %s", context, message)
 	}
-	
+
 	return h.sendMessage(channelID, threadTS, message)
 }
 
@@ -350,3 +356,4 @@ func (h *EventHandler) sendEphemeralMessage(channelID, userID, text string) erro
 	}
 	return err
 }
+
