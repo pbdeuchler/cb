@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     branch_name TEXT NOT NULL,
     work_tree_path TEXT NOT NULL,
     running_cost REAL NOT NULL DEFAULT 0.0,
-    status TEXT NOT NULL CHECK(status IN ('active', 'ending', 'ended', 'error')),
+    status TEXT NOT NULL CHECK(status IN ('starting', 'active', 'ending', 'ended', 'error')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMP,

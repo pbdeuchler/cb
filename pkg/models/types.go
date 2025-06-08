@@ -90,8 +90,11 @@ type CreateSessionRequest struct {
 	ChannelID         string `json:"channel_id"`
 	ThreadTS          string `json:"thread_ts"` // empty for channel-pinned sessions
 	RepoURL           string `json:"repo_url"`
-	Branch            string `json:"branch"`
-	SystemPromptID    *int64 `json:"system_prompt_id,omitempty"`
+	FromCommitish     string `json:"from_commitish"`
+	FeatureName       string `json:"feature_name"` // becomes branch_name
+	ModelName         string `json:"model_name"`
+	PromptText        string `json:"prompt_text,omitempty"`
+	PromptName        string `json:"prompt_name,omitempty"`
 }
 
 // CreateUserRequest represents a request to create a new user
@@ -212,7 +215,13 @@ const (
 
 // Session user role constants
 const (
-	SessionRoleOwner       = "owner"
+	SessionRoleOwner        = "owner"
 	SessionRoleCollaborator = "collaborator"
-	SessionRoleViewer      = "viewer"
+	SessionRoleViewer       = "viewer"
+)
+
+// Claude model constants
+const (
+	ModelSonnet = "sonnet"
+	ModelOpus   = "opus"
 )

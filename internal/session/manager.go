@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,93 +35,129 @@ func NewManager(database *db.DB, cfg *config.Config) *Manager {
 	}
 }
 
-// CreateSession creates a new Claude Code session
+// CreateSession creates a new Claude Code session (immediate response)
 func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRequest) (*models.Session, error) {
 	// Validate request
 	if err := m.validateCreateSessionRequest(req); err != nil {
 		return nil, err
 	}
 
-	// Check for existing active session in this channel/thread
-	existing, err := m.db.GetActiveSessionForChannel(ctx, req.WorkspaceID, req.ChannelID, req.ThreadTS)
+	// Check if branch name already exists
+	exists, err := m.db.CheckBranchNameExists(ctx, req.FeatureName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to check for existing session: %w", err)
+		return nil, fmt.Errorf("failed to check branch name: %w", err)
 	}
-	if existing != nil {
-		return nil, models.NewCBError(models.ErrCodeSessionExists, "active session already exists in this context", nil)
-	}
-
-	// Check user session limit
-	activeSessions, err := m.db.GetActiveSessionsByUser(ctx, req.CreatedByUserID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check user session count: %w", err)
-	}
-	if len(activeSessions) >= m.config.Session.MaxPerUser {
+	if exists {
 		return nil, models.NewCBError(models.ErrCodeSessionExists, 
-			fmt.Sprintf("user has reached maximum session limit (%d)", m.config.Session.MaxPerUser), nil)
+			fmt.Sprintf("session with feature name '%s' already exists", req.FeatureName), nil)
 	}
 
-	// Validate repository access
-	if err := m.repoMgr.ValidateRepoURL(ctx, req.RepoURL); err != nil {
-		return nil, err
-	}
-
-	// Generate session ID and work tree path
+	// Generate session ID
 	sessionID := m.generateSessionID()
-	workTreePath := filepath.Join(m.config.Session.WorkDir, sessionID)
 
-	// Clone or create work tree
-	if err := m.repoMgr.CloneOrCreateWorkTree(ctx, req.RepoURL, req.Branch, workTreePath); err != nil {
-		return nil, fmt.Errorf("failed to setup repository: %w", err)
-	}
-
-	// Get user credentials
-	apiKey, err := m.db.GetCredential(ctx, req.CreatedByUserID, models.CredentialTypeAnthropic)
-	if err != nil {
-		// Cleanup work tree on failure
-		m.repoMgr.Cleanup(ctx, workTreePath)
-		return nil, err
-	}
-
-	// Start Claude Code session
-	_, err = m.claudeMgr.StartSession(ctx, sessionID, workTreePath, apiKey)
-	if err != nil {
-		// Cleanup work tree on failure
-		m.repoMgr.Cleanup(ctx, workTreePath)
-		return nil, fmt.Errorf("failed to start Claude session: %w", err)
-	}
-
-	// Create session record
+	// Create session record immediately (status will be updated by background process)
 	session := &models.Session{
 		SessionID:        sessionID,
 		SlackWorkspaceID: req.WorkspaceID,
 		SlackChannelID:   req.ChannelID,
 		SlackThreadTS:    req.ThreadTS,
 		RepoURL:          req.RepoURL,
-		BranchName:       req.Branch,
-		WorkTreePath:     workTreePath,
+		BranchName:       req.FeatureName, // Use feature name as branch name
+		WorkTreePath:     "", // Will be set by background process
 		RunningCost:      0.0,
-		Status:           models.SessionStatusActive,
+		Status:           "starting", // Custom status for setup phase
 	}
 
 	// Store session in database
 	if err := m.db.CreateSession(ctx, session); err != nil {
-		// Cleanup on failure
-		m.claudeMgr.StopSession(ctx, sessionID)
-		m.repoMgr.Cleanup(ctx, workTreePath)
 		return nil, fmt.Errorf("failed to store session: %w", err)
 	}
 
 	// Add the creating user as the owner of the session
 	if err := m.db.AddUserToSession(ctx, session.ID, req.CreatedByUserID, models.SessionRoleOwner); err != nil {
-		// Cleanup on failure
-		m.claudeMgr.StopSession(ctx, sessionID)
-		m.repoMgr.Cleanup(ctx, workTreePath)
 		return nil, fmt.Errorf("failed to add owner to session: %w", err)
 	}
 
 	log.Printf("Created session %s for user %d in channel %s", sessionID, req.CreatedByUserID, req.ChannelID)
 	return session, nil
+}
+
+// SetupSessionAsync sets up the repository and Claude session in the background
+func (m *Manager) SetupSessionAsync(ctx context.Context, session *models.Session, req *models.CreateSessionRequest, progressCallback func(string)) {
+	// This will run in a goroutine
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Panic in session setup: %v", r)
+			progressCallback(fmt.Sprintf("❌ Session setup failed: %v", r))
+			m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+		}
+	}()
+
+	// Initialize new git manager
+	gitMgr := repo.NewGoGitManager()
+
+	// Setup repository and worktree
+	result, err := gitMgr.SetupSessionRepo(ctx, req.RepoURL, req.FromCommitish, req.FeatureName, progressCallback)
+	if err != nil {
+		progressCallback(fmt.Sprintf("❌ Repository setup failed: %v", err))
+		m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+		return
+	}
+
+	// Update session with worktree path
+	session.WorkTreePath = result.WorktreePath
+	// Note: We would need to add an UpdateSessionWorkTreePath method to update this
+
+	// Get system prompt content
+	systemPrompt, err := m.getSystemPromptContent(ctx, req)
+	if err != nil {
+		progressCallback(fmt.Sprintf("❌ Failed to get system prompt: %v", err))
+		m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+		return
+	}
+
+	// Start Claude streaming session
+	streamMgr := NewClaudeStreamManager()
+	
+	messageCallback := func(message string) {
+		progressCallback(message)
+	}
+	
+	costCallback := func(cost float64) {
+		m.db.UpdateSessionCost(ctx, session.SessionID, cost)
+	}
+
+	err = streamMgr.StartStreamingSession(ctx, session.SessionID, result.WorktreePath, systemPrompt, req.ModelName, messageCallback, costCallback)
+	if err != nil {
+		progressCallback(fmt.Sprintf("❌ Failed to start Claude session: %v", err))
+		m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+		return
+	}
+
+	// Mark session as active
+	m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusActive)
+	progressCallback("✅ Session setup complete! Ready for instructions.")
+}
+
+// getSystemPromptContent retrieves the system prompt content based on the request
+func (m *Manager) getSystemPromptContent(ctx context.Context, req *models.CreateSessionRequest) (string, error) {
+	// If prompt text is provided, use it directly
+	if req.PromptText != "" {
+		return req.PromptText, nil
+	}
+
+	// If prompt name is provided, look it up
+	if req.PromptName != "" {
+		prompt, err := m.db.GetSystemPromptByName(ctx, req.CreatedByUserID, req.PromptName)
+		if err != nil {
+			return "", err
+		}
+		return prompt.Content, nil
+	}
+
+	// Use default prompt
+	streamMgr := NewClaudeStreamManager()
+	return streamMgr.GetDefaultSystemPrompt(), nil
 }
 
 // GetSession retrieves a session by ID
@@ -269,6 +305,16 @@ func (m *Manager) UpdateSessionCost(ctx context.Context, sessionID string, cost 
 	return m.db.UpdateSessionCost(ctx, sessionID, cost)
 }
 
+// GetSystemPromptByName retrieves a system prompt by name for a user
+func (m *Manager) GetSystemPromptByName(ctx context.Context, userID int64, name string) (*models.SystemPrompt, error) {
+	return m.db.GetSystemPromptByName(ctx, userID, name)
+}
+
+// CheckBranchNameExists checks if a branch name is already in use
+func (m *Manager) CheckBranchNameExists(ctx context.Context, branchName string) (bool, error) {
+	return m.db.CheckBranchNameExists(ctx, branchName)
+}
+
 // GetSessionInfo returns detailed information about a session
 func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[string]interface{}, error) {
 	session, err := m.db.GetSession(ctx, sessionID)
@@ -317,8 +363,25 @@ func (m *Manager) validateCreateSessionRequest(req *models.CreateSessionRequest)
 	if req.RepoURL == "" {
 		return models.NewCBError(models.ErrCodeInvalidCommand, "repository URL is required", nil)
 	}
-	if req.Branch == "" {
-		req.Branch = "main" // Default to main branch
+	if req.FromCommitish == "" {
+		return models.NewCBError(models.ErrCodeInvalidCommand, "from commitish is required", nil)
+	}
+	if req.FeatureName == "" {
+		return models.NewCBError(models.ErrCodeInvalidCommand, "feature name is required", nil)
+	}
+	if req.ModelName == "" {
+		return models.NewCBError(models.ErrCodeInvalidCommand, "model name is required", nil)
+	}
+
+	// Validate model name
+	if req.ModelName != models.ModelSonnet && req.ModelName != models.ModelOpus {
+		return models.NewCBError(models.ErrCodeInvalidCommand, 
+			fmt.Sprintf("invalid model '%s', must be 'sonnet' or 'opus'", req.ModelName), nil)
+	}
+
+	// Validate feature name for git branch compatibility
+	if err := ValidateFeatureName(req.FeatureName); err != nil {
+		return models.NewCBError(models.ErrCodeInvalidCommand, fmt.Sprintf("invalid feature name: %v", err), nil)
 	}
 
 	// Check channel restrictions
@@ -333,6 +396,29 @@ func (m *Manager) generateSessionID() string {
 	bytes := make([]byte, 16)
 	rand.Read(bytes)
 	return hex.EncodeToString(bytes)
+}
+
+// ValidateFeatureName ensures the feature name is valid for use as a git branch name
+func ValidateFeatureName(name string) error {
+	if name == "" {
+		return fmt.Errorf("feature name cannot be empty")
+	}
+
+	// Git branch name restrictions
+	if strings.Contains(name, " ") {
+		return fmt.Errorf("feature name cannot contain spaces")
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return fmt.Errorf("feature name cannot start or end with hyphen")
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("feature name cannot contain '..'")
+	}
+	if strings.ContainsAny(name, "~^:?*[\\") {
+		return fmt.Errorf("feature name contains invalid characters")
+	}
+
+	return nil
 }
 
 // StartIdleSessionMonitor starts a goroutine to monitor and cleanup idle sessions

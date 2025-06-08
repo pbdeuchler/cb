@@ -429,6 +429,29 @@ func (db *DB) GetSystemPromptsByUser(ctx context.Context, userID int64) ([]*mode
 	return prompts, nil
 }
 
+func (db *DB) GetSystemPromptByName(ctx context.Context, userID int64, name string) (*models.SystemPrompt, error) {
+	query := `
+		SELECT DISTINCT sp.id, sp.name, sp.description, sp.content, sp.is_public, sp.created_by, sp.created_at, sp.updated_at
+		FROM system_prompts sp
+		LEFT JOIN user_system_prompts usp ON sp.id = usp.system_prompt_id
+		WHERE (sp.created_by = ? OR usp.user_id = ? OR sp.is_public = TRUE) AND sp.name = ?
+		LIMIT 1
+	`
+
+	var prompt models.SystemPrompt
+	err := db.conn.QueryRowContext(ctx, query, userID, userID, name).Scan(
+		&prompt.ID, &prompt.Name, &prompt.Description, &prompt.Content, &prompt.IsPublic, &prompt.CreatedBy, &prompt.CreatedAt, &prompt.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.NewCBError(models.ErrCodeSessionNotFound, "system prompt not found", err)
+		}
+		return nil, fmt.Errorf("failed to get system prompt by name: %w", err)
+	}
+
+	return &prompt, nil
+}
+
 func (db *DB) UpdateSystemPrompt(ctx context.Context, req *models.UpdateSystemPromptRequest) (*models.SystemPrompt, error) {
 	query := `
 		UPDATE system_prompts 
@@ -576,6 +599,22 @@ func (db *DB) GetSessionOwner(ctx context.Context, sessionID int64) (int64, erro
 	}
 
 	return ownerID, nil
+}
+
+func (db *DB) CheckBranchNameExists(ctx context.Context, branchName string) (bool, error) {
+	query := `
+		SELECT COUNT(*) 
+		FROM sessions 
+		WHERE branch_name = ?
+	`
+
+	var count int
+	err := db.conn.QueryRowContext(ctx, query, branchName).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check branch name: %w", err)
+	}
+
+	return count > 0, nil
 }
 
 // User system prompt operations

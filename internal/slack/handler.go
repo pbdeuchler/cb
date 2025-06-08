@@ -111,9 +111,9 @@ func (h *EventHandler) handleCommand(ctx context.Context, user *models.User, cha
 
 // handleStartCommand handles the start command
 func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User, channelID, threadTS string, args []string) error {
-	// Parse start command arguments
-	commandText := "start " + strings.Join(args, " ")
-	params, err := ParseStartCommand(commandText)
+	// Parse start command arguments using new parser
+	fullCommand := fmt.Sprintf("@%s start %s", h.botUserID, strings.Join(args, " "))
+	cmdArgs, err := ParseStartCommandNew(fullCommand)
 	if err != nil {
 		return h.sendErrorMessage(channelID, threadTS, "", err)
 	}
@@ -126,14 +126,16 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 	if !hasCredentials {
 		return h.sendErrorMessage(channelID, threadTS, "",
 			models.NewCBError(models.ErrCodeNoCredentials,
-				"Missing required credentials. Use `credentials set anthropic <api-key>` to set your Anthropic API key", nil))
+				"Missing required credentials. Use `credentials set {github|anthropic} <secret>` to continue", nil))
 	}
 
-	// Determine thread timestamp
-	sessionThreadTS := threadTS
-	if params.UseThread && threadTS == "" {
-		// Create a new thread
-		sessionThreadTS = ""
+	// Create a new thread for this session
+	initialMsg := fmt.Sprintf("🚀 Starting session '%s' with model %s...", cmdArgs.Feature, cmdArgs.Model)
+
+	// Send initial message and get thread timestamp
+	_, sessionThreadTS, err := h.client.PostMessage(channelID, slack.MsgOptionText(initialMsg, false))
+	if err != nil {
+		return fmt.Errorf("failed to create session thread: %w", err)
 	}
 
 	// Create session request
@@ -142,26 +144,33 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 		CreatedByUserID: user.ID,
 		ChannelID:       channelID,
 		ThreadTS:        sessionThreadTS,
-		RepoURL:         params.RepoURL,
-		Branch:          params.Branch,
+		RepoURL:         cmdArgs.RepoURL,
+		FromCommitish:   cmdArgs.From,
+		FeatureName:     cmdArgs.Feature,
+		ModelName:       cmdArgs.Model,
+		PromptText:      cmdArgs.Prompt,
+		PromptName:      cmdArgs.PName,
 	}
 
-	// Create session
+	// Create session (immediate response)
 	session, err := h.sessionMgr.CreateSession(ctx, req)
 	if err != nil {
-		return h.sendErrorMessage(channelID, threadTS, "Failed to start session", err)
+		return h.sendErrorMessage(channelID, sessionThreadTS, "Failed to start session", err)
 	}
 
 	// Send success message
-	message := fmt.Sprintf("Started Claude Code session!\n\n%s",
-		FormatSessionInfo(map[string]any{
-			"session_id": session.SessionID,
-			"status":     session.Status,
-			"repo_url":   session.RepoURL,
-			"branch":     session.BranchName,
-		}))
+	successMsg := fmt.Sprintf("✅ Session '%s' created!\n\nSetup is now running in the background...", session.BranchName)
+	h.sendMessage(channelID, sessionThreadTS, successMsg)
 
-	return h.sendMessage(channelID, sessionThreadTS, FormatSuccessMessage(message))
+	// Start background setup
+	go func() {
+		progressCallback := func(message string) {
+			h.sendMessage(channelID, sessionThreadTS, message)
+		}
+		h.sessionMgr.SetupSessionAsync(context.Background(), session, req, progressCallback)
+	}()
+
+	return nil
 }
 
 // handleStopCommand handles the stop command
@@ -356,4 +365,3 @@ func (h *EventHandler) sendEphemeralMessage(channelID, userID, text string) erro
 	}
 	return err
 }
-

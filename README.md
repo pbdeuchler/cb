@@ -10,7 +10,8 @@ A small Go service that bridges Slack workspaces with Claude Code sessions, enab
 > I restrained myself from doing manual code changes as much as I could,
 > but there were a couple very small edits (lt ~20 chars per edit) here and there.
 > This code should be treated and trusted accordingly.
-> All text below this line (and elsewhere in this repo) is entirely maintained by an LLM.
+> I do not neccessarily endorse how this project was setup or how the code works and over
+> time, dependent on my manual contributions, you'll probably see things change.
 
 ## Features
 
@@ -110,9 +111,7 @@ The service is configured via environment variables:
 
 Examples:
 
-- `@cb start https://github.com/user/repo`
-- `@cb start https://github.com/user/repo feature-branch`
-- `@cb start https://github.com/user/repo main --thread`
+- `@cb start --from ${git_commitish} --feat ${feature_name} --model {model_name} --prompt {prompt_text} --pname ${prompt_name}`
 
 ### Managing Sessions
 
