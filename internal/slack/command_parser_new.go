@@ -10,12 +10,12 @@ import (
 
 // StartCommandArgs represents parsed start command arguments
 type StartCommandArgs struct {
-	RepoURL   string
-	From      string
-	Feature   string
-	Model     string
-	Prompt    string
-	PName     string
+	RepoURL string
+	From    string
+	Feature string
+	Model   string
+	Prompt  string
+	PName   string
 }
 
 // ContinueCommandArgs represents parsed continue command arguments
@@ -75,19 +75,15 @@ func ParseStartCommandNew(text string) (*StartCommandArgs, error) {
 	if *feat == "" {
 		return nil, models.NewCBError(models.ErrCodeInvalidCommand, "--feat is required", nil)
 	}
-	if *model == "" {
-		return nil, models.NewCBError(models.ErrCodeInvalidCommand, "--model is required", nil)
-	}
 
 	// Validate model name
-	if *model != models.ModelSonnet && *model != models.ModelOpus {
-		return nil, models.NewCBError(models.ErrCodeInvalidCommand, 
-			fmt.Sprintf("invalid model '%s', must be 'sonnet' or 'opus'", *model), nil)
+	if *model != models.ModelOpus {
+		*model = models.ModelSonnet // Default to Sonnet if not specified
 	}
 
 	// Validate that either prompt or pname is provided (but not both)
 	if *prompt != "" && *pname != "" {
-		return nil, models.NewCBError(models.ErrCodeInvalidCommand, 
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand,
 			"cannot specify both --prompt and --pname", nil)
 	}
 
@@ -118,7 +114,7 @@ func ValidateFeatureName(name string) error {
 		return fmt.Errorf("feature name cannot contain '..'")
 	}
 	if strings.ContainsAny(name, "~^:?*[\\") {
-		return fmt.Errorf("feature name contains invalid characters")
+		return fmt.Errorf("feature name cannot contain special characters: ~ ^ : ? * [ \\")
 	}
 
 	return nil
@@ -175,3 +171,4 @@ func ParseContinueCommand(text string) (*ContinueCommandArgs, error) {
 		Feature: *feat,
 	}, nil
 }
+
