@@ -48,7 +48,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 		return nil, fmt.Errorf("failed to check branch name: %w", err)
 	}
 	if exists {
-		return nil, models.NewCBError(models.ErrCodeSessionExists, 
+		return nil, models.NewCBError(models.ErrCodeSessionExists,
 			fmt.Sprintf("session with feature name '%s' already exists", req.FeatureName), nil)
 	}
 
@@ -63,7 +63,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 		SlackThreadTS:    req.ThreadTS,
 		RepoURL:          req.RepoURL,
 		BranchName:       req.FeatureName, // Use feature name as branch name
-		WorkTreePath:     "", // Will be set by background process
+		WorkTreePath:     "",              // Will be set by background process
 		RunningCost:      0.0,
 		Status:           "starting", // Custom status for setup phase
 	}
@@ -118,11 +118,11 @@ func (m *Manager) SetupSessionAsync(ctx context.Context, session *models.Session
 
 	// Start Claude streaming session
 	streamMgr := NewClaudeStreamManager()
-	
+
 	messageCallback := func(message string) {
 		progressCallback(message)
 	}
-	
+
 	costCallback := func(cost float64) {
 		m.db.UpdateSessionCost(ctx, session.SessionID, cost)
 	}
@@ -182,10 +182,10 @@ func (m *Manager) SendToSession(ctx context.Context, sessionID, message string) 
 		return "", models.NewCBError(models.ErrCodeClaudeUnavailable, "session is not active", nil)
 	}
 
-	// Log incoming message
-	if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionUserToClaude, message); err != nil {
-		log.Printf("Failed to log incoming message: %v", err)
-	}
+	// Don't log messages for now
+	// if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionUserToClaude, message); err != nil {
+	// 	log.Printf("Failed to log incoming message: %v", err)
+	// }
 
 	// Send command to Claude process
 	response, err := m.claudeMgr.SendCommand(ctx, sessionID, message)
@@ -193,10 +193,10 @@ func (m *Manager) SendToSession(ctx context.Context, sessionID, message string) 
 		return "", err
 	}
 
-	// Log outgoing response
-	if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionClaudeToUser, response); err != nil {
-		log.Printf("Failed to log outgoing message: %v", err)
-	}
+	// Don't log messages for now
+	// if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionClaudeToUser, response); err != nil {
+	// 	log.Printf("Failed to log outgoing message: %v", err)
+	// }
 
 	return response, nil
 }
@@ -315,6 +315,21 @@ func (m *Manager) CheckBranchNameExists(ctx context.Context, branchName string) 
 	return m.db.CheckBranchNameExists(ctx, branchName)
 }
 
+// GetSessionByBranchName retrieves a session by its branch name
+func (m *Manager) GetSessionByBranchName(ctx context.Context, branchName string) (*models.Session, error) {
+	return m.db.GetSessionByBranchName(ctx, branchName)
+}
+
+// IsUserAssociatedWithSession checks if a user is associated with a session
+func (m *Manager) IsUserAssociatedWithSession(ctx context.Context, sessionID int64, userID int64) (bool, error) {
+	return m.db.IsUserAssociatedWithSession(ctx, sessionID, userID)
+}
+
+// UpdateSessionThread updates the thread timestamp for a session
+func (m *Manager) UpdateSessionThread(ctx context.Context, sessionID string, newThreadTS string) error {
+	return m.db.UpdateSessionThread(ctx, sessionID, newThreadTS)
+}
+
 // GetSessionInfo returns detailed information about a session
 func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[string]interface{}, error) {
 	session, err := m.db.GetSession(ctx, sessionID)
@@ -323,15 +338,15 @@ func (m *Manager) GetSessionInfo(ctx context.Context, sessionID string) (map[str
 	}
 
 	info := map[string]interface{}{
-		"session_id":    session.SessionID,
-		"status":        session.Status,
-		"repo_url":      session.RepoURL,
-		"branch":        session.BranchName,
-		"running_cost":  session.RunningCost,
-		"created_at":    session.CreatedAt,
-		"updated_at":    session.UpdatedAt,
-		"channel_id":    session.SlackChannelID,
-		"thread_ts":     session.SlackThreadTS,
+		"session_id":   session.SessionID,
+		"status":       session.Status,
+		"repo_url":     session.RepoURL,
+		"branch":       session.BranchName,
+		"running_cost": session.RunningCost,
+		"created_at":   session.CreatedAt,
+		"updated_at":   session.UpdatedAt,
+		"channel_id":   session.SlackChannelID,
+		"thread_ts":    session.SlackThreadTS,
 	}
 
 	// Get Claude process status
@@ -375,7 +390,7 @@ func (m *Manager) validateCreateSessionRequest(req *models.CreateSessionRequest)
 
 	// Validate model name
 	if req.ModelName != models.ModelSonnet && req.ModelName != models.ModelOpus {
-		return models.NewCBError(models.ErrCodeInvalidCommand, 
+		return models.NewCBError(models.ErrCodeInvalidCommand,
 			fmt.Sprintf("invalid model '%s', must be 'sonnet' or 'opus'", req.ModelName), nil)
 	}
 
@@ -455,3 +470,4 @@ func (m *Manager) cleanupIdleSessions(ctx context.Context) {
 		}
 	}
 }
+

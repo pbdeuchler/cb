@@ -277,6 +277,30 @@ func (db *DB) UpdateSessionCost(ctx context.Context, sessionID string, cost floa
 	return nil
 }
 
+func (db *DB) UpdateSessionThread(ctx context.Context, sessionID string, newThreadTS string) error {
+	query := `
+		UPDATE sessions 
+		SET slack_thread_ts = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE session_id = ?
+	`
+
+	result, err := db.conn.ExecContext(ctx, query, newThreadTS, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to update session thread: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return models.NewCBError(models.ErrCodeSessionNotFound, "session not found", nil)
+	}
+
+	return nil
+}
+
 func (db *DB) GetAllActiveSessions(ctx context.Context) ([]*models.Session, error) {
 	query := `
 		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
@@ -612,6 +636,48 @@ func (db *DB) CheckBranchNameExists(ctx context.Context, branchName string) (boo
 	err := db.conn.QueryRowContext(ctx, query, branchName).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("failed to check branch name: %w", err)
+	}
+
+	return count > 0, nil
+}
+
+func (db *DB) GetSessionByBranchName(ctx context.Context, branchName string) (*models.Session, error) {
+	query := `
+		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
+			   repo_url, branch_name, work_tree_path, running_cost, status,
+			   created_at, updated_at, ended_at
+		FROM sessions 
+		WHERE branch_name = ?
+	`
+
+	var session models.Session
+	err := db.conn.QueryRowContext(ctx, query, branchName).Scan(
+		&session.ID, &session.SessionID, &session.SlackWorkspaceID,
+		&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
+		&session.WorkTreePath, &session.RunningCost, &session.Status,
+		&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, models.NewCBError(models.ErrCodeSessionNotFound, "session not found", err)
+		}
+		return nil, fmt.Errorf("failed to get session by branch name: %w", err)
+	}
+
+	return &session, nil
+}
+
+func (db *DB) IsUserAssociatedWithSession(ctx context.Context, sessionID int64, userID int64) (bool, error) {
+	query := `
+		SELECT COUNT(*) 
+		FROM session_users 
+		WHERE session_id = ? AND user_id = ?
+	`
+
+	var count int
+	err := db.conn.QueryRowContext(ctx, query, sessionID, userID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check user session association: %w", err)
 	}
 
 	return count > 0, nil

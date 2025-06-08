@@ -93,6 +93,8 @@ func (h *EventHandler) handleCommand(ctx context.Context, user *models.User, cha
 	switch command {
 	case "start":
 		return h.handleStartCommand(ctx, user, channelID, threadTS, args)
+	case "continue":
+		return h.handleContinueCommand(ctx, user, channelID, threadTS, args)
 	case "stop":
 		return h.handleStopCommand(ctx, user, channelID, threadTS)
 	case "status":
@@ -169,6 +171,71 @@ func (h *EventHandler) handleStartCommand(ctx context.Context, user *models.User
 		}
 		h.sessionMgr.SetupSessionAsync(context.Background(), session, req, progressCallback)
 	}()
+
+	return nil
+}
+
+// handleContinueCommand handles the continue command
+func (h *EventHandler) handleContinueCommand(ctx context.Context, user *models.User, channelID, threadTS string, args []string) error {
+	// Parse continue command arguments
+	fullCommand := fmt.Sprintf("@%s continue %s", h.botUserID, strings.Join(args, " "))
+	cmdArgs, err := ParseContinueCommand(fullCommand)
+	if err != nil {
+		return h.sendErrorMessage(channelID, threadTS, "", err)
+	}
+
+	// Find session by branch name
+	session, err := h.sessionMgr.GetSessionByBranchName(ctx, cmdArgs.Feature)
+	if err != nil {
+		return h.sendErrorMessage(channelID, threadTS, "Failed to find session", err)
+	}
+
+	// Check if user is associated with this session
+	isAssociated, err := h.sessionMgr.IsUserAssociatedWithSession(ctx, session.ID, user.ID)
+	if err != nil {
+		return h.sendErrorMessage(channelID, threadTS, "Failed to check session access", err)
+	}
+	if !isAssociated {
+		return h.sendErrorMessage(channelID, threadTS, "",
+			models.NewCBError(models.ErrCodeUnauthorized,
+				fmt.Sprintf("You are not associated with session '%s'", cmdArgs.Feature), nil))
+	}
+
+	// Create a new thread for this session
+	initialMsg := fmt.Sprintf("🔄 Continuing session '%s' in this thread...", cmdArgs.Feature)
+
+	err = h.sendMessage(channelID, threadTS, initialMsg)
+	if err != nil {
+		return fmt.Errorf("failed to create new session thread: %w", err)
+	}
+
+	// Store the old thread info for notification
+	oldChannelID := session.SlackChannelID
+	oldThreadTS := session.SlackThreadTS
+
+	// Update the session thread
+	err = h.sessionMgr.UpdateSessionThread(ctx, session.SessionID, threadTS)
+	if err != nil {
+		return h.sendErrorMessage(channelID, threadTS, "Failed to update session thread", err)
+	}
+
+	// Send success message in new thread
+	successMsg := fmt.Sprintf("✅ Session '%s' has been moved to this thread!\n\n"+
+		"📊 **Session Info:**\n"+
+		"• Repository: %s\n"+
+		"• Branch: %s\n"+
+		"• Status: %s\n"+
+		"• Running Cost: $%.4f",
+		session.BranchName, session.RepoURL, session.BranchName, session.Status, session.RunningCost)
+
+	h.sendMessage(channelID, threadTS, successMsg)
+
+	// Send notification to old thread (if different from current location)
+	if oldChannelID != "" && oldThreadTS != "" && (oldChannelID != channelID || oldThreadTS != threadTS) {
+		oldThreadMsg := fmt.Sprintf("📍 Session '%s' has been moved to a new thread.\n\n"+
+			"Messages will no longer be monitored in this thread.", cmdArgs.Feature)
+		h.sendMessage(oldChannelID, oldThreadTS, oldThreadMsg)
+	}
 
 	return nil
 }

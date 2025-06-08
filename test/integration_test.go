@@ -163,15 +163,26 @@ func TestSessionLifecycle(t *testing.T) {
 		WorkspaceID:     user.SlackWorkspaceID,
 		CreatedByUserID: user.ID,
 		ChannelID:       "C123456",
-		ThreadTS:        "",
+		ThreadTS:        "1234567890.123456",
 		RepoURL:         "https://github.com/test/repo",
-		Branch:          "main",
+		FromCommitish:   "main",
+		FeatureName:     "test-feature",
+		ModelName:       "sonnet",
+		PromptText:      "Test system prompt",
 	}
 
-	// This will fail at the Claude process start, but that's expected in test
-	_, err = sessionMgr.CreateSession(ctx, sessionReq)
-	if err == nil {
-		t.Error("Expected session creation to fail with echo command")
+	// Test session creation - now succeeds immediately but background setup would fail
+	session, err := sessionMgr.CreateSession(ctx, sessionReq)
+	if err != nil {
+		t.Fatalf("Session creation should succeed immediately: %v", err)
+	}
+	
+	if session.BranchName != "test-feature" {
+		t.Errorf("Expected branch name 'test-feature', got %s", session.BranchName)
+	}
+	
+	if session.Status != "starting" {
+		t.Errorf("Expected status 'starting', got %s", session.Status)
 	}
 
 	// Test getting user by Slack ID

@@ -18,6 +18,11 @@ type StartCommandArgs struct {
 	PName     string
 }
 
+// ContinueCommandArgs represents parsed continue command arguments
+type ContinueCommandArgs struct {
+	Feature string
+}
+
 // ParseStartCommandNew parses the new start command syntax using the flag package
 func ParseStartCommandNew(text string) (*StartCommandArgs, error) {
 	// Remove the bot mention and "start" command from the text
@@ -117,4 +122,56 @@ func ValidateFeatureName(name string) error {
 	}
 
 	return nil
+}
+
+// ParseContinueCommand parses the continue command syntax using the flag package
+func ParseContinueCommand(text string) (*ContinueCommandArgs, error) {
+	// Remove the bot mention and "continue" command from the text
+	parts := strings.Fields(text)
+	if len(parts) < 2 {
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand, "continue command requires arguments", nil)
+	}
+
+	// Find the start of the command arguments (after "@bot continue")
+	var argStart int
+	for i, part := range parts {
+		if part == "continue" {
+			argStart = i + 1
+			break
+		}
+	}
+
+	if argStart >= len(parts) {
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand, "continue command requires arguments", nil)
+	}
+
+	// Get the arguments after "continue"
+	args := parts[argStart:]
+
+	// Create a new flag set for parsing
+	fs := flag.NewFlagSet("continue", flag.ContinueOnError)
+	fs.SetOutput(&strings.Builder{}) // Suppress default error output
+
+	// Define flags
+	feat := fs.String("feat", "", "Feature name (session identifier)")
+
+	// Parse the arguments
+	err := fs.Parse(args)
+	if err != nil {
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand, fmt.Sprintf("failed to parse continue command: %v", err), err)
+	}
+
+	// Validate required arguments
+	if *feat == "" {
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand, "--feat is required", nil)
+	}
+
+	// Validate feature name
+	if err := ValidateFeatureName(*feat); err != nil {
+		return nil, models.NewCBError(models.ErrCodeInvalidCommand, fmt.Sprintf("invalid feature name: %v", err), nil)
+	}
+
+	return &ContinueCommandArgs{
+		Feature: *feat,
+	}, nil
 }
