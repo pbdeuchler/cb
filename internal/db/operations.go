@@ -132,15 +132,15 @@ func (db *DB) CreateSession(ctx context.Context, session *models.Session) error 
 	query := `
 		INSERT INTO sessions (
 			session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
-			repo_url, branch_name, work_tree_path, running_cost, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			repo_url, branch_name, work_tree_path, model_name, running_cost, status
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING id
 	`
 
 	err := db.conn.QueryRowContext(ctx, query,
 		session.SessionID, session.SlackWorkspaceID, session.SlackChannelID,
 		session.SlackThreadTS, session.RepoURL, session.BranchName, session.WorkTreePath,
-		session.RunningCost, session.Status,
+		session.ModelName, session.RunningCost, session.Status,
 	).Scan(&session.ID)
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
@@ -152,7 +152,7 @@ func (db *DB) CreateSession(ctx context.Context, session *models.Session) error 
 func (db *DB) GetSession(ctx context.Context, sessionID string) (*models.Session, error) {
 	query := `
 		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
-			   repo_url, branch_name, work_tree_path, running_cost, status,
+			   repo_url, branch_name, work_tree_path, model_name, running_cost, status,
 			   created_at, updated_at, ended_at
 		FROM sessions 
 		WHERE session_id = ?
@@ -162,7 +162,7 @@ func (db *DB) GetSession(ctx context.Context, sessionID string) (*models.Session
 	err := db.conn.QueryRowContext(ctx, query, sessionID).Scan(
 		&session.ID, &session.SessionID, &session.SlackWorkspaceID,
 		&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
-		&session.WorkTreePath, &session.RunningCost, &session.Status,
+		&session.WorkTreePath, &session.ModelName, &session.RunningCost, &session.Status,
 		&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
 	)
 	if err != nil {
@@ -178,7 +178,7 @@ func (db *DB) GetSession(ctx context.Context, sessionID string) (*models.Session
 func (db *DB) GetActiveSessionForChannel(ctx context.Context, workspaceID, channelID, threadTS string) (*models.Session, error) {
 	query := `
 		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
-			   repo_url, branch_name, work_tree_path, running_cost, status,
+			   repo_url, branch_name, work_tree_path, model_name, running_cost, status,
 			   created_at, updated_at, ended_at
 		FROM sessions 
 		WHERE slack_workspace_id = ? AND slack_channel_id = ? AND slack_thread_ts = ? AND status = 'active'
@@ -190,7 +190,7 @@ func (db *DB) GetActiveSessionForChannel(ctx context.Context, workspaceID, chann
 	err := db.conn.QueryRowContext(ctx, query, workspaceID, channelID, threadTS).Scan(
 		&session.ID, &session.SessionID, &session.SlackWorkspaceID,
 		&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
-		&session.WorkTreePath, &session.RunningCost, &session.Status,
+		&session.WorkTreePath, &session.ModelName, &session.RunningCost, &session.Status,
 		&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
 	)
 	if err != nil {
@@ -206,7 +206,7 @@ func (db *DB) GetActiveSessionForChannel(ctx context.Context, workspaceID, chann
 func (db *DB) GetActiveSessionsByUser(ctx context.Context, userID int64) ([]*models.Session, error) {
 	query := `
 		SELECT DISTINCT s.id, s.session_id, s.slack_workspace_id, s.slack_channel_id, s.slack_thread_ts,
-			   s.repo_url, s.branch_name, s.work_tree_path, s.running_cost, s.status,
+			   s.repo_url, s.branch_name, s.work_tree_path, s.model_name, s.running_cost, s.status,
 			   s.created_at, s.updated_at, s.ended_at
 		FROM sessions s
 		INNER JOIN session_users su ON s.id = su.session_id
@@ -226,7 +226,7 @@ func (db *DB) GetActiveSessionsByUser(ctx context.Context, userID int64) ([]*mod
 		err := rows.Scan(
 			&session.ID, &session.SessionID, &session.SlackWorkspaceID,
 			&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
-			&session.WorkTreePath, &session.RunningCost, &session.Status,
+			&session.WorkTreePath, &session.ModelName, &session.RunningCost, &session.Status,
 			&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
 		)
 		if err != nil {
@@ -301,10 +301,82 @@ func (db *DB) UpdateSessionThread(ctx context.Context, sessionID string, newThre
 	return nil
 }
 
+func (db *DB) UpdateSessionByID(ctx context.Context, sessionDBID int64, sessionID string) error {
+	query := `
+		UPDATE sessions 
+		SET session_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+
+	result, err := db.conn.ExecContext(ctx, query, sessionID, sessionDBID)
+	if err != nil {
+		return fmt.Errorf("failed to update session ID: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return models.NewCBError(models.ErrCodeSessionNotFound, "session not found", nil)
+	}
+
+	return nil
+}
+
+func (db *DB) UpdateSessionStatusByID(ctx context.Context, sessionDBID int64, status string) error {
+	query := `
+		UPDATE sessions 
+		SET status = ?, updated_at = CURRENT_TIMESTAMP, ended_at = CASE WHEN ? = 'ended' THEN CURRENT_TIMESTAMP ELSE ended_at END
+		WHERE id = ?
+	`
+
+	result, err := db.conn.ExecContext(ctx, query, status, status, sessionDBID)
+	if err != nil {
+		return fmt.Errorf("failed to update session status: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return models.NewCBError(models.ErrCodeSessionNotFound, "session not found", nil)
+	}
+
+	return nil
+}
+
+func (db *DB) UpdateSessionCostByID(ctx context.Context, sessionDBID int64, cost float64) error {
+	query := `
+		UPDATE sessions 
+		SET running_cost = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+
+	result, err := db.conn.ExecContext(ctx, query, cost, sessionDBID)
+	if err != nil {
+		return fmt.Errorf("failed to update session cost: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return models.NewCBError(models.ErrCodeSessionNotFound, "session not found", nil)
+	}
+
+	return nil
+}
+
 func (db *DB) GetAllActiveSessions(ctx context.Context) ([]*models.Session, error) {
 	query := `
 		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
-			   repo_url, branch_name, work_tree_path, running_cost, status,
+			   repo_url, branch_name, work_tree_path, model_name, running_cost, status,
 			   created_at, updated_at, ended_at
 		FROM sessions 
 		WHERE status = 'active'
@@ -323,7 +395,7 @@ func (db *DB) GetAllActiveSessions(ctx context.Context) ([]*models.Session, erro
 		err := rows.Scan(
 			&session.ID, &session.SessionID, &session.SlackWorkspaceID,
 			&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
-			&session.WorkTreePath, &session.RunningCost, &session.Status,
+			&session.WorkTreePath, &session.ModelName, &session.RunningCost, &session.Status,
 			&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
 		)
 		if err != nil {
@@ -644,7 +716,7 @@ func (db *DB) CheckBranchNameExists(ctx context.Context, branchName string) (boo
 func (db *DB) GetSessionByBranchName(ctx context.Context, branchName string) (*models.Session, error) {
 	query := `
 		SELECT id, session_id, slack_workspace_id, slack_channel_id, slack_thread_ts,
-			   repo_url, branch_name, work_tree_path, running_cost, status,
+			   repo_url, branch_name, work_tree_path, model_name, running_cost, status,
 			   created_at, updated_at, ended_at
 		FROM sessions 
 		WHERE branch_name = ?
@@ -654,7 +726,7 @@ func (db *DB) GetSessionByBranchName(ctx context.Context, branchName string) (*m
 	err := db.conn.QueryRowContext(ctx, query, branchName).Scan(
 		&session.ID, &session.SessionID, &session.SlackWorkspaceID,
 		&session.SlackChannelID, &session.SlackThreadTS, &session.RepoURL, &session.BranchName,
-		&session.WorkTreePath, &session.RunningCost, &session.Status,
+		&session.WorkTreePath, &session.ModelName, &session.RunningCost, &session.Status,
 		&session.CreatedAt, &session.UpdatedAt, &session.EndedAt,
 	)
 	if err != nil {

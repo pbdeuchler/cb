@@ -78,14 +78,21 @@ func (h *EventHandler) HandleMessage(ctx context.Context, event *slackevents.Mes
 		return nil
 	}
 
-	// Forward message to Claude session
-	response, err := h.sessionMgr.SendToSession(ctx, session.SessionID, event.Text)
+	// Forward message to Claude session with streaming callbacks
+	messageCallback := func(message string) {
+		h.sendMessage(event.Channel, event.ThreadTimeStamp, message)
+	}
+
+	costCallback := func(cost float64) {
+		// Cost updates are handled by the session manager
+	}
+
+	err = h.sessionMgr.SendToSession(ctx, session.SessionID, event.Text, messageCallback, costCallback)
 	if err != nil {
 		return h.sendErrorMessage(event.Channel, event.ThreadTimeStamp, "Failed to process message", err)
 	}
 
-	// Send response back to Slack
-	return h.sendMessage(event.Channel, event.ThreadTimeStamp, response)
+	return nil
 }
 
 // handleCommand processes a parsed command

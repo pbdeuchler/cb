@@ -268,13 +268,14 @@ func TestDatabaseOperations(t *testing.T) {
 
 	// Test session operations
 	session := &models.Session{
-		SessionID:        "test-session-123",
+		SessionID:        "claude-session-123", // This is the Claude session ID
 		SlackWorkspaceID: user1.SlackWorkspaceID,
 		SlackChannelID:   "C123456",
 		SlackThreadTS:    "",
 		RepoURL:          "https://github.com/test/repo",
 		BranchName:       "main",
 		WorkTreePath:     "/tmp/test-session",
+		ModelName:        "sonnet",
 		RunningCost:      0.0,
 		Status:           models.SessionStatusActive,
 	}

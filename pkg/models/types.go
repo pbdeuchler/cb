@@ -28,13 +28,14 @@ type Credential struct {
 // Session represents an active Claude Code session
 type Session struct {
 	ID               int64      `json:"id" db:"id"`
-	SessionID        string     `json:"session_id" db:"session_id"`
+	SessionID        string     `json:"session_id" db:"session_id"` // This is the Claude session ID
 	SlackWorkspaceID string     `json:"slack_workspace_id" db:"slack_workspace_id"`
 	SlackChannelID   string     `json:"slack_channel_id" db:"slack_channel_id"`
 	SlackThreadTS    string     `json:"slack_thread_ts" db:"slack_thread_ts"`
 	RepoURL          string     `json:"repo_url" db:"repo_url"`
 	BranchName       string     `json:"branch_name" db:"branch_name"`
 	WorkTreePath     string     `json:"work_tree_path" db:"work_tree_path"`
+	ModelName        string     `json:"model_name" db:"model_name"`
 	RunningCost      float64    `json:"running_cost" db:"running_cost"`
 	Status           string     `json:"status" db:"status"`
 	CreatedAt        time.Time  `json:"created_at" db:"created_at"`

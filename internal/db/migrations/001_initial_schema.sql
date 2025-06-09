@@ -24,19 +24,19 @@ CREATE TABLE IF NOT EXISTS credentials (
 -- Sessions table (no direct user relationship - uses session_users junction table)
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT UNIQUE NOT NULL,
+    session_id TEXT DEFAULT '',
     slack_workspace_id TEXT NOT NULL,
     slack_channel_id TEXT NOT NULL,
     slack_thread_ts TEXT NOT NULL,
     repo_url TEXT NOT NULL,
     branch_name TEXT NOT NULL,
     work_tree_path TEXT NOT NULL,
+    model_name TEXT NOT NULL DEFAULT 'sonnet',
     running_cost REAL NOT NULL DEFAULT 0.0,
     status TEXT NOT NULL CHECK(status IN ('starting', 'active', 'ending', 'ended', 'error')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     ended_at TIMESTAMP,
-    UNIQUE(session_id),
     UNIQUE(branch_name),
     UNIQUE(work_tree_path),
     UNIQUE(slack_channel_id, slack_thread_ts)

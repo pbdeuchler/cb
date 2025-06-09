@@ -6,12 +6,12 @@ A small Go service that bridges Slack workspaces with Claude Code sessions, enab
 > This repo is _not_ production ready and has many security flaws, use at your own risk
 
 > [!WARNING]  
-> As an experiment repo was entirely made by Claude Code, and partially this bot itself.
-> I restrained myself from doing manual code changes as much as I could,
-> but there were a couple very small edits (lt ~20 chars per edit) here and there.
+> As an experiment repo was almost entirely made by Claude Code, and partially this bot itself.
 > This code should be treated and trusted accordingly.
-> I do not neccessarily endorse how this project was setup or how the code works and over
-> time, dependent on my manual contributions, you'll probably see things change.
+> I restrained myself from doing manual code changes as much as I could,
+> but there were small ones here and there when Claude seemed to hit a wall.
+> I do not neccessarily endorse how this project was setup, how the code works, or
+> any API/system design contained herein.
 
 ## Features
 
@@ -259,4 +259,4 @@ curl http://localhost:8080/health
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the GNU GPLv3 License with the [Commons Clause License Condition v1.0](https://commonsclause.com/).

@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"strings"
@@ -52,18 +50,17 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 			fmt.Sprintf("session with feature name '%s' already exists", req.FeatureName), nil)
 	}
 
-	// Generate session ID
-	sessionID := m.generateSessionID()
-
 	// Create session record immediately (status will be updated by background process)
+	// SessionID will be set when Claude returns the session ID
 	session := &models.Session{
-		SessionID:        sessionID,
+		SessionID:        "", // Will be set by Claude during setup
 		SlackWorkspaceID: req.WorkspaceID,
 		SlackChannelID:   req.ChannelID,
 		SlackThreadTS:    req.ThreadTS,
 		RepoURL:          req.RepoURL,
 		BranchName:       req.FeatureName, // Use feature name as branch name
 		WorkTreePath:     "",              // Will be set by background process
+		ModelName:        req.ModelName,
 		RunningCost:      0.0,
 		Status:           "starting", // Custom status for setup phase
 	}
@@ -78,7 +75,7 @@ func (m *Manager) CreateSession(ctx context.Context, req *models.CreateSessionRe
 		return nil, fmt.Errorf("failed to add owner to session: %w", err)
 	}
 
-	log.Printf("Created session %s for user %d in channel %s", sessionID, req.CreatedByUserID, req.ChannelID)
+	log.Printf("Created session (branch: %s) for user %d in channel %s", session.BranchName, req.CreatedByUserID, req.ChannelID)
 	return session, nil
 }
 
@@ -89,7 +86,7 @@ func (m *Manager) SetupSessionAsync(ctx context.Context, session *models.Session
 		if r := recover(); r != nil {
 			log.Printf("Panic in session setup: %v", r)
 			progressCallback(fmt.Sprintf("❌ Session setup failed: %v", r))
-			m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+			m.db.UpdateSessionStatusByID(ctx, session.ID, models.SessionStatusError)
 		}
 	}()
 
@@ -116,7 +113,15 @@ func (m *Manager) SetupSessionAsync(ctx context.Context, session *models.Session
 		return
 	}
 
-	// Start Claude streaming session
+	// Get Anthropic API key from user credentials
+	anthropicAPIKey, err := m.db.GetCredential(ctx, req.CreatedByUserID, models.CredentialTypeAnthropic)
+	if err != nil {
+		progressCallback(fmt.Sprintf("❌ Failed to get Anthropic API key: %v", err))
+		m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
+		return
+	}
+
+	// Start Claude session
 	streamMgr := NewClaudeStreamManager()
 
 	messageCallback := func(message string) {
@@ -124,18 +129,34 @@ func (m *Manager) SetupSessionAsync(ctx context.Context, session *models.Session
 	}
 
 	costCallback := func(cost float64) {
-		m.db.UpdateSessionCost(ctx, session.SessionID, cost)
+		m.db.UpdateSessionCostByID(ctx, session.ID, cost)
 	}
 
-	err = streamMgr.StartStreamingSession(ctx, session.SessionID, result.WorktreePath, systemPrompt, req.ModelName, messageCallback, costCallback)
+	claudeSessionID, err := streamMgr.StartSession(ctx, req.FeatureName, result.WorktreePath, systemPrompt, req.ModelName, anthropicAPIKey, messageCallback, costCallback)
 	if err != nil {
 		progressCallback(fmt.Sprintf("❌ Failed to start Claude session: %v", err))
 		m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusError)
 		return
 	}
 
+	// Update session with Claude session ID
+	if claudeSessionID != "" {
+		err = m.db.UpdateSessionByID(ctx, session.ID, claudeSessionID)
+		if err != nil {
+			progressCallback(fmt.Sprintf("⚠️ Failed to save Claude session ID: %v", err))
+			m.db.UpdateSessionStatusByID(ctx, session.ID, models.SessionStatusError)
+			return
+		}
+		// Update our local session object
+		session.SessionID = claudeSessionID
+	} else {
+		progressCallback("⚠️ No Claude session ID received")
+		m.db.UpdateSessionStatusByID(ctx, session.ID, models.SessionStatusError)
+		return
+	}
+
 	// Mark session as active
-	m.db.UpdateSessionStatus(ctx, session.SessionID, models.SessionStatusActive)
+	m.db.UpdateSessionStatusByID(ctx, session.ID, models.SessionStatusActive)
 	progressCallback("✅ Session setup complete! Ready for instructions.")
 }
 
@@ -171,34 +192,42 @@ func (m *Manager) GetActiveSessionForChannel(ctx context.Context, workspaceID, c
 }
 
 // SendToSession sends a command to a Claude session
-func (m *Manager) SendToSession(ctx context.Context, sessionID, message string) (string, error) {
+func (m *Manager) SendToSession(ctx context.Context, sessionID, message string, messageCallback func(string), costCallback func(float64)) error {
 	// Get session from database
 	session, err := m.db.GetSession(ctx, sessionID)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if session.Status != models.SessionStatusActive {
-		return "", models.NewCBError(models.ErrCodeClaudeUnavailable, "session is not active", nil)
+		return models.NewCBError(models.ErrCodeClaudeUnavailable, "session is not active", nil)
 	}
 
-	// Don't log messages for now
-	// if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionUserToClaude, message); err != nil {
-	// 	log.Printf("Failed to log incoming message: %v", err)
-	// }
+	if session.SessionID == "" {
+		return models.NewCBError(models.ErrCodeClaudeUnavailable, "claude session ID not available", nil)
+	}
 
-	// Send command to Claude process
-	response, err := m.claudeMgr.SendCommand(ctx, sessionID, message)
+	// Get session owner to get their Anthropic API key
+	ownerID, err := m.db.GetSessionOwner(ctx, session.ID)
 	if err != nil {
-		return "", err
+		return fmt.Errorf("failed to get session owner: %w", err)
 	}
 
-	// Don't log messages for now
-	// if err := m.db.CreateSessionMessage(ctx, session.ID, "", models.MessageDirectionClaudeToUser, response); err != nil {
-	// 	log.Printf("Failed to log outgoing message: %v", err)
-	// }
+	// Get Anthropic API key from owner's credentials
+	anthropicAPIKey, err := m.db.GetCredential(ctx, ownerID, models.CredentialTypeAnthropic)
+	if err != nil {
+		return fmt.Errorf("failed to get Anthropic API key: %w", err)
+	}
 
-	return response, nil
+	// Send message to Claude session
+	streamMgr := NewClaudeStreamManager()
+
+	err = streamMgr.SendMessage(ctx, session.SessionID, session.BranchName, session.WorkTreePath, message, session.ModelName, anthropicAPIKey, messageCallback, costCallback)
+	if err != nil {
+		return fmt.Errorf("failed to send message to Claude: %w", err)
+	}
+
+	return nil
 }
 
 // EndSession gracefully ends a Claude session
@@ -407,11 +436,6 @@ func (m *Manager) validateCreateSessionRequest(req *models.CreateSessionRequest)
 	return nil
 }
 
-func (m *Manager) generateSessionID() string {
-	bytes := make([]byte, 16)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
-}
 
 // ValidateFeatureName ensures the feature name is valid for use as a git branch name
 func ValidateFeatureName(name string) error {
@@ -438,17 +462,17 @@ func ValidateFeatureName(name string) error {
 
 // StartIdleSessionMonitor starts a goroutine to monitor and cleanup idle sessions
 func (m *Manager) StartIdleSessionMonitor(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Minute) // Check every 5 minutes
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.cleanupIdleSessions(ctx)
-		}
-	}
+	// ticker := time.NewTicker(5 * time.Minute) // Check every 5 minutes
+	// defer ticker.Stop()
+	//
+	// for {
+	// 	select {
+	// 	case <-ctx.Done():
+	// 		return
+	// 	case <-ticker.C:
+	// 		m.cleanupIdleSessions(ctx)
+	// 	}
+	// }
 }
 
 func (m *Manager) cleanupIdleSessions(ctx context.Context) {
@@ -470,4 +494,3 @@ func (m *Manager) cleanupIdleSessions(ctx context.Context) {
 		}
 	}
 }
-
