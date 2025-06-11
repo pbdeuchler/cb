@@ -27,7 +27,7 @@ type Config struct {
 		WorkDir        string `env:"WORK_DIR" envDefault:"./sessions"`
 		MaxPerUser     int    `env:"MAX_SESSIONS_PER_USER" envDefault:"5"`
 		IdleTimeout    int    `env:"SESSION_IDLE_TIMEOUT" envDefault:"3600"`
-		ClaudeCodePath string `env:"CLAUDE_CODE_PATH" envDefault:"claude-code"`
+		ClaudeCodePath string `env:"CLAUDE_CODE_PATH" envDefault:"claude"`
 	}
 
 	Monitoring struct {
@@ -39,7 +39,7 @@ type Config struct {
 
 func Load() (*Config, error) {
 	var cfg Config
-	
+
 	if err := env.Parse(&cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse environment variables: %w", err)
 	}
@@ -66,3 +66,4 @@ func (c *Config) validate() error {
 
 	return nil
 }
+

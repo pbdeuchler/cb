@@ -1,0 +1,232 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+
+env:
+  GO_VERSION: "1.23"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run tests
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        continue-on-error: true
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+        continue-on-error: true
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            name: linux-amd64
+          - goos: linux
+            goarch: arm64
+            name: linux-arm64
+          - goos: darwin
+            goarch: amd64
+            name: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            name: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o dist/cb-${{ matrix.name }}${{ matrix.ext }} ./cmd/server
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: cb-${{ matrix.name }}
+          path: dist/cb-${{ matrix.name }}${{ matrix.ext }}
+
+  release:
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: dist
+
+      - name: Prepare release assets
+        run: |
+          cd dist
+          for dir in */; do
+            cd "$dir"
+            tar -czf "../${dir%/}.tar.gz" *
+            cd ..
+          done
+          ls -la
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            # Extract version section from CHANGELOG.md
+            awk '/^## \[.*\]/ { if (p) exit; if ($0 ~ /'"${GITHUB_REF_NAME}"'/) p=1; next } p' CHANGELOG.md > changelog_section.md
+            if [ -s changelog_section.md ]; then
+              echo "CHANGELOG_SECTION<<EOF" >> $GITHUB_OUTPUT
+              cat changelog_section.md >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "CHANGELOG_SECTION=No changelog entry found for this version." >> $GITHUB_OUTPUT
+            fi
+          else
+            # Generate changelog from git commits since last tag
+            PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+            if [ -n "$PREV_TAG" ]; then
+              echo "CHANGELOG_SECTION<<EOF" >> $GITHUB_OUTPUT
+              echo "## Changes since $PREV_TAG" >> $GITHUB_OUTPUT
+              git log --pretty=format:"* %s (%h)" $PREV_TAG..HEAD >> $GITHUB_OUTPUT
+              echo "" >> $GITHUB_OUTPUT
+              echo "EOF" >> $GITHUB_OUTPUT
+            else
+              echo "CHANGELOG_SECTION=Initial release" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/*.tar.gz
+          body: |
+            # Claude Bot ${{ github.ref_name }}
+
+            ${{ steps.changelog.outputs.CHANGELOG_SECTION }}
+
+            ## Installation
+
+            Download the appropriate binary for your platform:
+
+            ### Linux (x86_64)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cb-linux-amd64.tar.gz | tar xz
+            sudo mv cb /usr/local/bin/
+            ```
+
+            ### Linux (ARM64) - AWS Graviton
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cb-linux-arm64.tar.gz | tar xz
+            sudo mv cb /usr/local/bin/
+            ```
+
+            ### macOS (Intel)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cb-darwin-amd64.tar.gz | tar xz
+            sudo mv cb /usr/local/bin/
+            ```
+
+            ### macOS (Apple Silicon)
+            ```bash
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/cb-darwin-arm64.tar.gz | tar xz
+            sudo mv cb /usr/local/bin/
+            ```
+
+            ### Windows
+            Download `cb-windows-amd64.tar.gz` and extract the `.exe` file.
+
+            ## Docker
+
+            ```bash
+            docker run --rm -v $(pwd):/workspace ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  # docker:
+  #   needs: [test, build]
+  #   runs-on: ubuntu-latest
+  #   if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+  #
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v3
+  #
+  #     - name: Log in to GitHub Container Registry
+  #       uses: docker/login-action@v3
+  #       with:
+  #         registry: ghcr.io
+  #         username: ${{ github.actor }}
+  #         password: ${{ secrets.GITHUB_TOKEN }}
+  #
+  #     - name: Extract metadata
+  #       id: meta
+  #       uses: docker/metadata-action@v5
+  #       with:
+  #         images: ghcr.io/${{ github.repository }}
+  #         tags: |
+  #           type=ref,event=branch
+  #           type=ref,event=pr
+  #           type=semver,pattern={{version}}
+  #           type=semver,pattern={{major}}.{{minor}}
+  #           type=semver,pattern={{major}}
+  #           type=sha,prefix={{branch}}-
+  #
+  #     - name: Build and push Docker image
+  #       uses: docker/build-push-action@v5
+  #       with:
+  #         context: .
+  #         platforms: linux/amd64,linux/arm64
+  #         push: true
+  #         tags: ${{ steps.meta.outputs.tags }}
+  #         labels: ${{ steps.meta.outputs.labels }}
+  #         cache-from: type=gha
+  #         cache-to: type=gha,mode=max
